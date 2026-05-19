@@ -9,7 +9,7 @@ import time
 from gimbal import GimbalController
 
 class FaceTrackingGimbal:
-    def __init__(self, camera_idx=1, serial_port='COM7'):
+    def __init__(self, camera_idx=0, serial_port='COM7'):
         """
         初始化人脸跟踪云台
 
@@ -20,9 +20,10 @@ class FaceTrackingGimbal:
         self.gimbal = GimbalController(port=serial_port)
         self.gimbal_connected = self.gimbal.connect()
 
-        self.cap = cv2.VideoCapture(camera_idx)
+        self.cap = cv2.VideoCapture(camera_idx, cv2.CAP_DSHOW)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
 
         self.net = self.init_dnn_model()
 
@@ -38,15 +39,17 @@ class FaceTrackingGimbal:
         self.tilt_error_sum = 0
         self.tilt_error_prev = 0
 
-        self.pan_kp = 0.1
-        self.pan_ki = 0.02
-        self.pan_kd = 0.3
+        self.pan_kp = 0.08
+        self.pan_ki = 0.0
+        self.pan_kd = 0.8
 
-        self.tilt_kp = 0.1
-        self.tilt_ki = 0.03
-        self.tilt_kd = 0.4
+        self.tilt_kp = 0.08
+        self.tilt_ki = 0.0
+        self.tilt_kd = 0.6
 
         self.integral_limit = 50
+        self.dead_zone = 0.05
+        self.max_delta = 5
 
         self.frame_count = 0
         self.face_detected_count = 0
@@ -106,7 +109,7 @@ class FaceTrackingGimbal:
         offset_ratio_x = offset_x / (frame_width / 2)
         offset_ratio_y = offset_y / (frame_height / 2)
 
-        if abs(offset_ratio_x) < 0.03 and abs(offset_ratio_y) < 0.03:
+        if abs(offset_ratio_x) < self.dead_zone and abs(offset_ratio_y) < self.dead_zone:
             self.pan_error_sum = 0
             self.tilt_error_sum = 0
             return
@@ -137,6 +140,9 @@ class FaceTrackingGimbal:
 
         pan_delta = self.pan_kp * pan_error + self.pan_ki * self.pan_error_sum + self.pan_kd * pan_derivative
         tilt_delta = self.tilt_kp * tilt_error + self.tilt_ki * self.tilt_error_sum + self.tilt_kd * tilt_derivative
+
+        pan_delta = max(-self.max_delta, min(self.max_delta, pan_delta))
+        tilt_delta = max(-self.max_delta, min(self.max_delta, tilt_delta))
 
         self.pan_current += pan_delta
         self.tilt_current += tilt_delta
@@ -213,12 +219,20 @@ class FaceTrackingGimbal:
             self.gimbal.reset()
             time.sleep(1)
 
+        frame_error_count = 0
         while True:
             ret, frame = self.cap.read()
 
             if not ret:
-                print("无法读取帧!")
-                break
+                frame_error_count += 1
+                if frame_error_count < 5:
+                    print(f"帧读取失败，重试中 ({frame_error_count}/5)...")
+                    time.sleep(0.1)
+                    continue
+                else:
+                    print("无法读取帧!")
+                    break
+            frame_error_count = 0
 
             frame = self.process_frame(frame)
 
@@ -266,9 +280,9 @@ def main():
     print()
 
     print("请输入摄像头索引:")
-    print("  0 - 内置摄像头")
-    print("  1 - 外接摄像头")
-    camera_idx = int(input("摄像头索引 (默认1): ").strip() or "1")
+    print("  0 - 外接摄像头")
+    print("  1 - 内置摄像头")
+    camera_idx = int(input("摄像头索引 (默认0): ").strip() or "0")
 
     print("\n请输入ESP32串口号:")
     print("  Windows: COM3, COM4, ...")
